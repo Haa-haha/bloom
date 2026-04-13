@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<!-- 增加移动端视口适配，防止缩放和保证全屏体验 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>心跳开花 - 生命的绽放</title>
+<style>
+  *{margin:0;padding:0}
+  body {
+    background:#060810;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    height:100vh;
+    overflow:hidden;
+    cursor:pointer;
+    font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    user-select: none; /* 防止用户双击选中文字影响体验 */
+    -webkit-user-select: none;
+  }
+  #hint {
+    position:fixed;
+    bottom: 50px;
+    left:50%;
+    transform:translateX(-50%);
+    color:rgba(255, 255, 255, 0.8);
+    font-size: 18px;
+    letter-spacing: 2px;
+    z-index:10;
+    pointer-events:none;
+    transition: opacity 1.5s ease-in-out, transform 1.5s ease-in-out;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.8);
+    animation: pulse 2s infinite alternate;
+  }
+  
+  /* 给提示文字加一个微弱的呼吸动画，引导用户点击 */
+  @keyframes pulse {
+    0% { transform: translateX(-50%) scale(1); opacity: 0.7; }
+    100% { transform: translateX(-50%) scale(1.05); opacity: 1; }
+  }
+
+  /* p5.js canvas 容器样式优化 */
+  .p5Canvas {
+    border-radius: 12px !important;
+    box-shadow: 0 15px 80px rgba(0,0,0,0.8) !important;
+    transition: box-shadow 0.5s ease;
+  }
+</style>
+</head>
+<body>
+<div id="hint">点击启动心跳</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+<script>
+// 在文件顶部将 W 改为通过 width 获取，因为 canvas 尺寸是动态的了
+// 我们使用一个全局变量 W 代替，在 setup 和 resize 时更新它
+let W = 700;
+
+// ===== 音效 =====
+let audioCtx, started = false;
+let cycleFinished = false;
+
+function initAudio() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)(); 
+  } else if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+}
+function playBeat(isLub, intensity) {
+  if (!audioCtx) return;
+  let now = audioCtx.currentTime, vol = 0.1 + intensity * 0.38;
+  let o = audioCtx.createOscillator(), g = audioCtx.createGain(), f = audioCtx.createBiquadFilter();
+  o.type = 'sine';
+  let fr = isLub ? 40 + intensity * 10 : 58 + intensity * 12;
+  o.frequency.setValueAtTime(fr, now);
+  o.frequency.exponentialRampToValueAtTime(fr * 0.4, now + 0.18);
+  f.type = 'lowpass'; f.frequency.setValueAtTime(90 + intensity * 90, now);
+  g.gain.setValueAtTime(0, now);
+  g.gain.linearRampToValueAtTime(vol, now + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.001, now + (isLub ? 0.22 : 0.14));
+  o.connect(f); f.connect(g); g.connect(audioCtx.destination);
+  o.start(now); o.stop(now + 0.3);
+  
+  let bLen = audioCtx.sampleRate * 0.06;
+  let buf = audioCtx.createBuffer(1, bLen, audioCtx.sampleRate);
+  let d = buf.getChannelData(0);
+  for (let i = 0; i < bLen; i++) d[i] = (Math.random() * 2 - 1) * 0.2;
+  let ns = audioCtx.createBufferSource(); ns.buffer = buf;
+  let ng = audioCtx.createGain(), nf = audioCtx.createBiquadFilter();
+  nf.type = 'lowpass'; nf.frequency.value = 65 + intensity * 40;
+  ng.gain.setValueAtTime(0, now);
+  ng.gain.linearRampToValueAtTime(vol * 0.2, now + 0.005);
+  ng.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
+  ns.connect(nf); nf.connect(ng); ng.connect(audioCtx.destination);
+  ns.start(now); ns.stop(now + 0.06);
+}
+
+// ===== 背景与云层 =====
+function getBgColor(intensity) {
+  let r = lerp(6, 45, intensity);
+  let g = lerp(8, 60, intensity);
+  let b = lerp(16, 90, intensity);
+  if (intensity > 0.6) {
+    let t2 = (intensity - 0.6) / 0.4;
+    // 黎明过渡到蓝天
+    r = lerp(r, 110, t2 * t2);
+    g = lerp(g, 180, t2 * t2);
+    b = lerp(b, 240, t2 * t2);
+  }
+  return [r, g, b];
+}
+
+let clouds = [];
+function initClouds() {
+  clouds = [];
+  // 固定 3 朵云，为了不重叠且两边都有，我们可以硬编码它们初始的粗略位置和方向
+  
+  // 云朵 1: 靠左上方，更靠左一些，避免碰到树冠
+  clouds.push({
+    x: -W * 0.3, // 初始位置在左侧屏幕外
+    targetX: W * 0.12, // 目标停留位置向左移
+    y: W * 0.08,
+    size: random(40, 65),
+    seed: random(1000)
+  });
+
+  // 云朵 2: 靠右边，更靠右一些
+  clouds.push({
+    x: W + W * 0.3, // 初始位置在右侧屏幕外
+    targetX: W * 0.85, // 目标停留位置向右移
+    y: W * 0.15,
+    size: random(35, 60),
+    seed: random(1000)
+  });
+
+  // 云朵 3: 靠左下，但避开树干中间
+  clouds.push({
+    x: -W * 0.4,
+    targetX: W * 0.15, // 目标停留位置向左移
+    y: W * 0.35, // 稍微往下移一点
+    size: random(45, 75),
+    seed: random(1000)
+  });
+}
+
+// 地面颜色
+function getGroundColor(intensity) {
+  let r = lerp(12, 35, intensity);
+  let g = lerp(16, 50, intensity);
+  let b = lerp(22, 40, intensity);
+  if (intensity > 0.6) {
+    let t2 = (intensity - 0.6) / 0.4;
+    r = lerp(r, 70, t2); g = lerp(g, 120, t2); b = lerp(b, 65, t2);
+  }
+  return [r, g, b];
+}
+
+// ===== 全局状态 =====
+let branches = [];
+let blooms = [];
+let fallingPetals = [];
+let t = 0, phase = 0;
+const CYCLE = 1800; // 30秒 @60fps，延长整个周期让铺垫更久
+let lastBeatF = -999, dubPending = false;
+let bloomSlots = [];
+let nextBloomIdx = 0;
+let pulseAmt = 0;
+let treePulse = 0;
+let groundGrass = [];
+let explosionTriggered = false;
+
+// ===== 树形生成 =====
+function generateTree() {
+  branches = []; blooms = []; bloomSlots = []; nextBloomIdx = 0;
+  groundGrass = []; fallingPetals = []; explosionTriggered = false;
+  t = 0; phase = 0; cycleFinished = false;
+  lastBeatF = -999; dubPending = false; // 必须重置心跳状态
+  pulseAmt = 0; treePulse = 0;
+  
+  // 树形生成时，增加更细的分支层级，以便生成更多的花朵槽位
+  let startX = W / 2, startY = W * 0.82;
+  growBranch(startX, startY, -PI / 2, W * 0.18, 16, 0); // 树根加粗从10变成16
+  
+  // 洗牌花朵槽位
+  for (let i = bloomSlots.length - 1; i > 0; i--) {
+    let j = Math.floor(Math.random() * (i + 1));
+    [bloomSlots[i], bloomSlots[j]] = [bloomSlots[j], bloomSlots[i]];
+  }
+  
+  // 增加地面植物种类和数量，移除方形花朵
+  for (let i = 0; i < 250; i++) {
+    let randType = random();
+    let type = 'grass1';
+    if (randType < 0.15) type = 'flower1';
+    else if (randType < 0.3) type = 'flower2'; // 现在的 flower2 不再是方形的
+    else if (randType < 0.5) type = 'fern';
+    else if (randType < 0.8) type = 'grass2';
+
+    groundGrass.push({
+      x: random(W * 0.02, W * 0.98),
+      y: W * 0.81 + random(2, 120), // 扩大Y轴随机范围，填满底部空白区域
+      h: random(12, 45), 
+      angle: random(-0.4, 0.4),
+      bloomed: false, bloomPhase: 0,
+      type: type,
+      swayOff: random(999), swaySpeed: random(0.015, 0.035)
+    });
+  }
+  // 按 Y 坐标排序以实现景深遮挡
+  groundGrass.sort((a, b) => a.y - b.y);
+  
+  initClouds();
+}
+
+function growBranch(x, y, angle, len, thickness, depth) {
+  // 放宽最大深度限制，从 9 提升到 11，让末端枝丫更多，从而产生更多开花点
+  if (depth > 11 || len < 3) return;
+  let ex = x + cos(angle) * len;
+  let ey = y + sin(angle) * len;
+  branches.push({ x1: x, y1: y, x2: ex, y2: ey, thick: thickness, depth: depth, len: len });
+  
+  // 在所有非主干分支上（depth >= 3）都均匀地产生开花点，保证枝条上都有花
+  if (depth >= 3) {
+    // 沿着这段枝条的长度，均匀地分配槽位
+    // 枝条越长，上面的槽位越多
+    let numSlots = floor(len / 8); // 每隔约 8 像素放一个潜在开花点
+    if (numSlots < 1) numSlots = 1;
+    
+    for (let k = 0; k < numSlots; k++) {
+      let t = (k + 0.5) / numSlots; // 沿着线段插值
+      let slotX = lerp(x, ex, t);
+      let slotY = lerp(y, ey, t);
+      bloomSlots.push({ x: slotX, y: slotY, depth: depth, bloom: null });
+    }
+  }
+  
+  // 增加分叉数量，从 depth < 3 的 2~4 扩大，让树冠更饱满
+  let nB;
+  if (depth < 2) nB = floor(random(2, 4)); // 降低一点主干分叉数，避免全是扫帚棍
+  else if (depth < 6) nB = floor(random(2, 4));
+  else nB = floor(random(1, 3));
+
+  for (let i = 0; i < nB; i++) {
+    // 让枝干像真正的树一样左右散开，而不是全被强行拉向上方
+    // 去掉之前过强的向上的牵引力
+    let spread = map(depth, 0, 11, 0.4, 0.8); // 散开角度
+    
+    // 为了保证树的平衡，我们可以让左边长一支，右边长一支，而不是纯随机
+    let dir = (i % 2 === 0) ? 1 : -1; // 左右交替
+    // 加一点随机偏移打破死板的对称
+    let na = angle + dir * random(spread * 0.4, spread) + random(-0.2, 0.2);
+    
+    // 当在主干(depth < 2)时，如果 i 是 0，让它大概率继续往上长
+    if (depth < 2 && i === nB - 1) {
+        na = angle + random(-0.15, 0.15); // 主干延伸
+    }
+
+    // 长度递减
+    let nl = len * random(0.6, 0.8);
+    // 粗细递减
+    let nt = max(0.8, thickness * 0.65);
+    
+    growBranch(ex, ey, na, nl, nt, depth + 1);
+  }
+}
+
+// ===== p5 =====
+function setup() {
+  // 根据窗口高度动态计算尺寸，保证在各种屏幕下都能完整显示
+  // 在手机等竖屏设备上，为了让画布不要太小，我们稍微调整缩放逻辑
+  let isMobile = windowWidth < windowHeight;
+  W = min(windowWidth, windowHeight) * (isMobile ? 0.95 : 0.9);
+  if (W > 800) W = 800; // 设置一个最大值，防止在大屏显示器上过大
+  let c = createCanvas(W, W);
+  generateTree();
+}
+
+function windowResized() {
+  let isMobile = windowWidth < windowHeight;
+  W = min(windowWidth, windowHeight) * (isMobile ? 0.95 : 0.9);
+  if (W > 800) W = 800;
+  resizeCanvas(W, W);
+  generateTree(); // 窗口调整时重新生成，以适应新的尺寸
+}
+
+// 统一处理交互事件（支持鼠标点击和手机触摸）
+function handleInteract() {
+  if (!started || cycleFinished) { 
+    initAudio(); 
+    if (cycleFinished) {
+      generateTree();
+    }
+    started = true; 
+    cycleFinished = false; // 确保解除完成状态
+    document.getElementById('hint').style.opacity = '0'; 
+  }
+}
+
+function mousePressed() {
+  handleInteract();
+}
+
+function touchStarted() {
+  handleInteract();
+  // 防止手机端双击放大的默认行为
+  return false; 
+}
+
+function draw() {
+  if (started && !cycleFinished) {
+    t++;
+    if (t >= CYCLE) {
+      cycleFinished = true;
+      document.getElementById('hint').style.opacity = '1';
+      document.getElementById('hint').innerText = "点击再次唤醒生命";
+    }
+  }
+  
+  phase = min(t / CYCLE, 1);
+
+  // 指数紧张（前面漫长，后面加速），让前期更平缓，后期加速更自然
+  // 之前的 easeInExpo 太极端了，改用更加平滑的 easeInOutCubic
+  let tension = phase < 0.85 ? easeInOutCubic(phase / 0.85) : 1;
+  // 移除 cooling，让 intensity 保持在 1（最高潮），不再降回 0
+  let intensity = tension;
+
+  // ===== 背景渐变 =====
+  let bg = getBgColor(intensity);
+  background(bg[0], bg[1], bg[2]);
+
+  // ===== 动态白云 =====
+  // 随着动画进度，云朵不再是透明度变化，而是从画面外平滑地滑入指定位置
+  // 整个周期是 30秒，20秒对应 phase 大约是 0.66 (20/30)
+  // 当 phase 到达 0.66 以后开始滑入，到 0.85 完全就位（在爆炸前刚好停稳）
+  let cloudProgress = map(phase, 0.66, 0.85, 0, 1);
+  if (cloudProgress > 0) {
+    let easeP = easeOutCubic(min(1, cloudProgress)); // 让滑入的过程越来越慢，最后平稳停住
+    noStroke();
+    for (let c of clouds) {
+      fill(255, 255, 255, 230); // 保持固定透明度，不再通过透明度隐现
+      let yOff = sin(t * 0.005 + c.seed) * 8; // 稍微增加云朵上下浮动
+      
+      // 根据进度，计算当前的 x 坐标
+      let currentX = lerp(c.x, c.targetX, easeP);
+      
+      ellipse(currentX, c.y + yOff, c.size * 2.2, c.size * 0.95);
+      ellipse(currentX + c.size * 0.5, c.y - c.size * 0.35 + yOff, c.size * 1.4, c.size * 0.85);
+      ellipse(currentX - c.size * 0.45, c.y - c.size * 0.25 + yOff, c.size * 1.2, c.size * 0.75);
+    }
+  }
+
+  // ===== 绘制带有层次的地面 =====
+  noStroke();
+  let gc = getGroundColor(intensity);
+  for (let i = 0; i < 6; i++) {
+    // 地面颜色随着脉冲（心跳）发生微弱的整体明暗/色调变化
+    let pulseBoost = pulseAmt * 15; // 整体随心跳泛出微弱光芒
+    fill(gc[0] - i * 4 + pulseBoost, gc[1] - i * 4 + pulseBoost, gc[2] - i * 4 + pulseBoost);
+    rect(0, W * 0.81 + i * 12, W, W * 0.19 - i * 12);
+  }
+
+  // ===== 心跳 =====
+  let bpm = getBPM(phase);
+  let beatGap = 3600 / bpm;
+  let beat = (started && !cycleFinished) ? checkBeat(t, beatGap) : null;
+
+  // 脉冲衰减
+  pulseAmt *= 0.82;
+  treePulse *= 0.9;
+
+  if (beat) {
+    let isLub = beat === 'lub';
+    pulseAmt = intensity * (isLub ? 1.0 : 0.55);
+    treePulse = intensity * (isLub ? 1.0 : 0.6);
+    if (started) playBeat(isLub, intensity);
+
+    // 树上开花 (只有在炸开前才长新花)
+    if (!explosionTriggered) {
+      // 增加每次心跳长出的花朵数量，让整棵树显得非常茂盛
+      let count = floor(map(intensity, 0, 1, 2, 12)); // 基础从2朵起步，高潮可达12朵
+      // 在高强度时，有更大概率额外长花
+      if (random() < intensity * 1.5) count += 2; 
+      
+      for (let c2 = 0; c2 < count; c2++) spawnBloom(intensity);
+    }
+
+    // 地面生长（随着心跳逐步生长）
+    let gpCount = floor(map(intensity, 0, 1, 2, 10));
+    for (let g = 0; g < gpCount; g++) spawnGroundPlant();
+
+    // 抖动共鸣
+    for (let b of blooms) b.beatPulse = intensity * 0.85;
+    for (let g of groundGrass) if (g.bloomed) g.beatPulse = intensity * 0.7;
+  }
+
+  // ===== 高潮爆发与大范围炸开 =====
+  // 不再使用 phase 单独判断“大量生成花朵”，这样会导致动画割裂
+  // 前面的心跳生成已经足够平滑了，这里只处理最后的爆炸逻辑
+
+  // 达到高潮顶点(最后)，触发大范围炸开，只炸开一次
+  // 将爆炸时机从 0.85 延后到 0.90，让前面的“狂暴”状态持续更久
+  if (phase >= 0.90 && !explosionTriggered) { 
+    explosionTriggered = true;
+    triggerExplosion();
+  }
+
+  // 爆炸之后，才开始普通的花瓣飘落，如果没炸开，就不飘落
+  if (explosionTriggered && !cycleFinished) {
+    for (let b of blooms) {
+      if (b.type === 'flower' && b.size > 4 && random() < 0.03 + (phase - 0.90) * 0.05) {
+        spawnPetal(b, false);
+      }
+    }
+  }
+
+  // ===== 画框震动 =====
+  let shk = pulseAmt * 3;
+  push();
+  translate(random(-shk, shk), random(-shk, shk));
+
+  // ===== 绘制树枝 =====
+  for (let b of branches) {
+    let warm = intensity * 40;
+    let bright = 160 - b.depth * 8 + warm;
+    let alpha = 180 + b.depth * 5;
+
+    let pOff = treePulse * (1 - b.depth * 0.08) * 2;
+    let ox1 = random(-pOff, pOff), oy1 = random(-pOff, pOff);
+    let ox2 = random(-pOff, pOff), oy2 = random(-pOff, pOff);
+
+    stroke(bright, bright - 15 + warm * 0.3, bright - 25, alpha);
+    strokeWeight(b.thick);
+    line(b.x1 + ox1, b.y1 + oy1, b.x2 + ox2, b.y2 + oy2);
+
+    // 树枝发光
+    if (intensity > 0.5 && treePulse > 0.1) {
+      let ga = treePulse * 18 * intensity;
+      stroke(bright + 50, bright + 30, bright - 10, ga);
+      strokeWeight(b.thick + 3);
+      line(b.x1 + ox1, b.y1 + oy1, b.x2 + ox2, b.y2 + oy2);
+    }
+  }
+  noStroke();
+
+  // ===== 绘制花朵 =====
+  for (let b of blooms) {
+    if (b.size < b.maxSize) b.size += (b.maxSize - b.size) * b.growSpeed;
+    if (started && !cycleFinished) b.phase += 0.025;
+    if (b.beatPulse > 0) b.beatPulse *= 0.85;
+    drawBloom(b);
+  }
+
+  // ===== 绘制地面植物 =====
+  for (let g of groundGrass) {
+    if (g.bloomed && g.bloomPhase < 1) g.bloomPhase = min(1, g.bloomPhase + 0.015);
+    if (g.beatPulse > 0) g.beatPulse *= 0.85;
+    drawGroundPlant(g, intensity);
+  }
+
+  // ===== 飘落花瓣 =====
+  for (let i = fallingPetals.length - 1; i >= 0; i--) {
+    let p = fallingPetals[i];
+    if (started && !cycleFinished) {
+      if (p.isExplosion) {
+        p.vy += 0.18; // 爆炸重力
+        p.vx *= 0.97; // 空气阻力
+        p.alpha -= 1.8;
+      } else {
+        p.vy += 0.02; // 普通重力
+        p.vx += sin(t * 0.015 + p.rot) * 0.02;
+        p.alpha -= 0.8;
+      }
+      p.x += p.vx;
+      p.y += p.vy;
+      p.rot += p.rotSpd;
+    }
+    
+    if (p.alpha > 0 && p.y < W + 30) {
+      push(); translate(p.x, p.y); rotate(p.rot);
+      fill(p.r, p.g, p.b, p.alpha);
+      ellipse(0, 0, p.size, p.size * 0.6);
+      pop();
+    } else {
+      fallingPetals.splice(i, 1);
+    }
+  }
+
+  // 去掉了之前的局部的圆形脉冲源（drawSource）
+
+  // ===== 高潮发光粒子 =====
+  if (intensity > 0.5 && !cycleFinished) {
+    let n = floor((intensity - 0.5) * 10);
+    for (let i = 0; i < n; i++) {
+      let px = random(W), py = random(W * 0.8);
+      let sz = random(1.5, 4);
+      let a = (intensity - 0.5) * 120 * random(0.5, 1);
+      fill(255, 230, 190, a);
+      ellipse(px, py, sz);
+    }
+  }
+
+  pop();
+}
+
+// 大范围炸开逻辑
+function triggerExplosion() {
+  for (let i = blooms.length - 1; i >= 0; i--) {
+    let b = blooms[i];
+    if (b.type === 'flower' || b.type === 'leaf') {
+      // 树上的花炸开变成漫天花瓣，每个花朵产生多个花瓣碎片
+      let petalCount = b.type === 'flower' ? floor(random(4, 9)) : floor(random(2, 4));
+      for (let k = 0; k < petalCount; k++) {
+        spawnPetal(b, true);
+      }
+      // 花朵本身消失
+      blooms.splice(i, 1);
+    }
+  }
+}
+
+function spawnBloom(intensity) {
+  if (nextBloomIdx >= bloomSlots.length) return;
+  
+  // 寻找下一个合适的槽位，避免花朵重叠（简单距离检测）
+  let slot = bloomSlots[nextBloomIdx];
+  let tries = 0;
+  while (tries < 10) {
+    slot = bloomSlots[nextBloomIdx];
+    let tooClose = false;
+    // 检查这个槽位附近是否已经有盛开的大花
+    for (let b of blooms) {
+      let d = dist(slot.x, slot.y, b.x, b.y);
+      if (b.type === 'flower' && d < 12) { // 间距太近
+        tooClose = true;
+        break;
+      }
+    }
+    if (!tooClose) break; // 找到合适的位置
+    nextBloomIdx++;
+    tries++;
+    if (nextBloomIdx >= bloomSlots.length) return;
+  }
+  
+  let type = random() < 0.65 ? 'flower' : (random() < 0.4 ? 'leaf' : 'bud'); // 稍微提高开花比例
+  slot.bloom = {
+    x: slot.x + random(-2, 2), y: slot.y + random(-2, 2), // 减小随机偏移，让花贴着枝干
+    type: type,
+    size: 0,
+    maxSize: type === 'flower' ? random(9, 20) : random(6, 15),
+    color: getBloomColor(type, intensity),
+    phase: random(TWO_PI), growSpeed: random(0.015, 0.04),
+    angle: random(TWO_PI),
+    beatPulse: intensity * 0.6
+  };
+  blooms.push(slot.bloom);
+  nextBloomIdx++;
+}
+
+function spawnGroundPlant() {
+  for (let g of groundGrass) {
+    if (!g.bloomed) { g.bloomed = true; g.bloomPhase = 0; g.beatPulse = 0; break; }
+  }
+}
+
+function spawnPetal(b, isExplosion) {
+  let vx, vy, rotSpd;
+  if (isExplosion) {
+    // 爆炸范围更广, 更具有冲击力，强制往上抛
+    let angle = random(-PI * 0.8, -PI * 0.2); // 限定方向为上方扇形区域 (-144度 到 -36度)
+    let speed = random(12, 35); // 极大的初速度
+    vx = cos(angle) * speed;
+    vy = sin(angle) * speed; // 必然是负数，往上飞
+    rotSpd = random(-0.4, 0.4); // 旋转速度也加快
+  } else {
+    vx = random(-1.0, 1.0);
+    vy = random(0.5, 1.5);
+    rotSpd = random(-0.04, 0.04);
+  }
+  fallingPetals.push({
+    x: b.x, y: b.y,
+    vx: vx, vy: vy,
+    rot: random(TWO_PI), rotSpd: rotSpd,
+    size: b.size * random(0.3, 0.5),
+    r: b.color[0], g: b.color[1], b: b.color[2],
+    alpha: isExplosion ? 255 : 210,
+    isExplosion: isExplosion
+  });
+}
+
+function drawBloom(b) {
+  push();
+  translate(b.x, b.y);
+  let beatScale = 1 + (b.beatPulse || 0) * 0.3;
+  let beatOff = (b.beatPulse || 0) * 2.5;
+  translate(random(-beatOff, beatOff), random(-beatOff, beatOff));
+  scale(beatScale);
+  let sz = b.size;
+  let c = b.color;
+
+  if (b.type === 'flower') {
+    let petals = 5;
+    let wobble = sin(b.phase) * 0.1;
+    // 移除了花朵背后的辉光（光圈）代码
+    for (let i = 0; i < petals; i++) {
+      let a = b.angle + (TWO_PI / petals) * i + wobble;
+      push(); rotate(a);
+      fill(c[0], c[1], c[2], 185);
+      ellipse(sz * 0.4, 0, sz * 0.9, sz * 0.5);
+      pop();
+    }
+    fill(255, 240, 160, 200);
+    ellipse(0, 0, sz * 0.3);
+  } else if (b.type === 'leaf') {
+    rotate(b.angle);
+    fill(c[0], c[1], c[2], 175);
+    beginShape();
+    vertex(0, 0);
+    bezierVertex(sz * 0.3, -sz * 0.25, sz * 0.7, -sz * 0.15, sz, 0);
+    bezierVertex(sz * 0.7, sz * 0.15, sz * 0.3, sz * 0.25, 0, 0);
+    endShape(CLOSE);
+    stroke(c[0] - 25, c[1] + 15, c[2] - 15, 70);
+    strokeWeight(0.6);
+    line(0, 0, sz * 0.85, 0);
+    noStroke();
+  } else {
+    // 重新绘制花骨朵 (bud)，使其看起来不那么像色块，更像含苞待放的花朵
+    let budPhase = sin(b.phase) * 0.05;
+    rotate(b.angle + budPhase);
+    
+    // 萼片（底部绿色的托）
+    fill(90, 150, 70, 180);
+    beginShape();
+    vertex(0, 0);
+    bezierVertex(-sz * 0.4, -sz * 0.1, -sz * 0.3, sz * 0.3, 0, sz * 0.4);
+    bezierVertex(sz * 0.3, sz * 0.3, sz * 0.4, -sz * 0.1, 0, 0);
+    endShape(CLOSE);
+    
+    // 花苞主体
+    fill(c[0], c[1], c[2], 195);
+    ellipse(0, sz * 0.35, sz * 0.6, sz * 0.7);
+    
+    // 花苞上的折痕/层次感
+    fill(c[0] + 30, c[1] + 20, c[2] + 20, 160);
+    beginShape();
+    vertex(0, sz * 0.1);
+    bezierVertex(-sz * 0.15, sz * 0.3, -sz * 0.1, sz * 0.6, 0, sz * 0.7);
+    bezierVertex(sz * 0.1, sz * 0.6, sz * 0.15, sz * 0.3, 0, sz * 0.1);
+    endShape(CLOSE);
+  }
+  pop();
+}
+
+function drawGroundPlant(g, intensity) {
+  let progress = g.bloomed ? g.bloomPhase : 0;
+  if (progress < 0.01) return;
+  let h = g.h * progress;
+  let bp = g.beatPulse || 0;
+
+  push();
+  translate(g.x, g.y);
+
+  // 动态摇摆感
+  let sway = (started && !cycleFinished) ? sin(t * g.swaySpeed + g.swayOff) * 5 * progress : sin(g.swayOff) * 5 * progress;
+  sway += bp * random(-7, 7);
+
+  if (g.type === 'grass1' || g.type === 'grass2') {
+    let green = 80 + progress * 80 + intensity * 40;
+    stroke(50 + progress * 40, green, 40 + progress * 20, 190 * progress);
+    strokeWeight(1.5 + bp * 1.5);
+    noFill();
+    beginShape();
+    vertex(0, 0);
+    quadraticVertex(sway * 0.5, -h * 0.5, sway * 1.5 + g.angle * 12, -h);
+    endShape();
+    if (g.type === 'grass2') {
+      beginShape();
+      vertex(3, 0);
+      quadraticVertex((sway - 3) * 0.5, -h * 0.4, sway * 0.7 - 6, -h * 0.75);
+      endShape();
+    }
+    noStroke();
+  } else if (g.type === 'fern') {
+    stroke(35 + progress * 30, 110 + progress * 50, 45, 185 * progress);
+    strokeWeight(1.5 + bp);
+    noFill();
+    let fx = sway + g.angle * 18;
+    beginShape();
+    vertex(0, 0);
+    quadraticVertex(fx * 0.5, -h * 0.5, fx, -h);
+    endShape();
+    if (progress > 0.3) {
+      fill(35, 130, 45, 160 * progress);
+      noStroke();
+      for (let i = 1; i <= 5; i++) {
+        let pct = i / 6;
+        let px = bezierPoint(0, fx * 0.5, fx, fx, pct);
+        let py = bezierPoint(0, -h * 0.5, -h, -h, pct);
+        let lfSz = 5 * (1 - pct) * progress;
+        ellipse(px + 3 + bp, py, lfSz * 1.5, lfSz);
+        ellipse(px - 3 - bp, py, lfSz * 1.5, lfSz);
+      }
+    }
+  } else if (g.type === 'flower1' || g.type === 'flower2') {
+    stroke(45 + progress * 45, 115 + progress * 65, 35 + progress * 15, 180 * progress);
+    strokeWeight(1.5 + bp);
+    noFill();
+    line(0, 0, sway, -h);
+    noStroke();
+    if (progress > 0.25) {
+      let fSz = (4 + progress * 7) * (1 + bp * 0.4);
+      if (g.type === 'flower1') {
+        fill(225 + (g.swayOff % 30), 85 + (g.swayOff % 65), 115 + (g.swayOff % 40), 200 * progress);
+        ellipse(sway, -h, fSz, fSz);
+        fill(255, 235, 140, 200 * progress);
+        ellipse(sway, -h, fSz * 0.35);
+      } else {
+        // flower2 现在是圆润的花瓣形状
+        push();
+        translate(sway, -h);
+        rotate(sway * 0.08);
+        fill(120 + (g.swayOff % 130), 160 + (g.swayOff % 90), 255, 200 * progress);
+        for (let i = 0; i < 5; i++) {
+           let a = TWO_PI / 5 * i;
+           ellipse(cos(a) * fSz * 0.4, sin(a) * fSz * 0.4, fSz * 0.7, fSz * 0.5);
+        }
+        fill(255, 255, 200, 200 * progress);
+        ellipse(0, 0, fSz * 0.4);
+        pop();
+      }
+    }
+  }
+  pop();
+}
+
+function drawSource(x, y, intensity) {
+  let sz = 8 + pulseAmt * 18;
+  let r = lerp(140, 250, intensity);
+  let g = lerp(160, 180, intensity);
+  let b = lerp(220, 160, intensity);
+  for (let rad = sz * 4.5; rad > 0; rad -= 6) {
+    let a = map(rad, 0, sz * 4.5, 18 * intensity + 4, 0);
+    fill(r, g, b, a);
+    noStroke();
+    ellipse(x, y, rad * 2.2);
+  }
+  fill(min(255, r + 50), min(255, g + 50), min(255, b + 50), 50 + pulseAmt * 70);
+  ellipse(x, y, sz);
+}
+
+function getBloomColor(type, intensity) {
+  if (type === 'flower') {
+    // 让花朵随机在粉色系和红色系之间变化
+    let isRed = random() > 0.6; // 40% 的概率是深红色，60%的概率是粉色
+    
+    if (isRed) {
+      let r = lerp(180, 230, intensity);
+      let g = lerp(40, 20, intensity);
+      let b = lerp(50, 30, intensity);
+      return [r + random(-15, 15), g + random(-5, 5), b + random(-5, 5)];
+    } else {
+      let r = lerp(230, 255, intensity);
+      let g = lerp(170, 95, intensity);
+      let b = lerp(180, 125, intensity);
+      return [r + random(-15, 15), g + random(-12, 12), b + random(-12, 12)];
+    }
+  } else if (type === 'leaf') {
+    return [80 + random(-10, 10) - intensity * 25,
+            175 + random(-10, 10) + intensity * 20,
+            60 + random(-8, 8)];
+  } else { // bud
+    let isRedBud = random() > 0.6;
+    if (isRedBud) {
+      return [180 + random(-10, 10), 50 + random(-10, 10), 60 + random(-10, 10)];
+    } else {
+      return [240 + random(-12, 12), 170 + random(-15, 15), 180 + random(-15, 15)];
+    }
+  }
+}
+
+function getBPM(ph) {
+  // 心跳：平缓 -> 越来越快 -> 极限狂暴 -> 骤停炸开 -> 缓慢 -> 停止
+  if (ph < 0.3) return lerp(40, 55, ph / 0.3); // 初期平缓
+  if (ph < 0.6) return lerp(55, 110, easeInOutQuad((ph - 0.3) / 0.3)); // 中期平滑加速
+  
+  // 后期剧烈加速，最高 BPM 从 220 提升到 300，增加压迫感
+  if (ph < 0.85) return lerp(110, 300, easeInQuad((ph - 0.6) / 0.25)); 
+  
+  // 在 0.85 到 0.90（爆炸前夕），心跳突然变得极快且沉重（营造一种要撑破的感觉）
+  if (ph < 0.90) return lerp(300, 350, (ph - 0.85) / 0.05);
+
+  // phase >= 0.90 之后（爆炸发生后），心跳迅速衰减到非常缓慢
+  return lerp(120, 30, easeOutCubic((ph - 0.90) / 0.10));
+}
+
+function checkBeat(frame, interval) {
+  let gap = frame - lastBeatF;
+  if (!dubPending && gap >= interval) { lastBeatF = frame; dubPending = true; return 'lub'; }
+  if (dubPending && gap >= 8) { lastBeatF = frame; dubPending = false; return 'dub'; }
+  return null;
+}
+
+function easeInQuad(t) { return t * t; }
+function easeInOutQuad(t) { return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t; }
+function easeInExpo(t) { return t === 0 ? 0 : pow(2, 10 * t - 10); }
+function easeInOutCubic(t) { return t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1; }
+function easeOutQuad(t) { return t * (2 - t); }
+function easeOutCubic(t) { let t1 = t - 1; return t1 * t1 * t1 + 1; }
+</script>
+</body>
+</html>

@@ -2,65 +2,24 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
-<!-- 增加移动端视口适配，防止缩放和保证全屏体验 -->
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>心跳开花 - 生命的绽放</title>
+<title>心跳开花 v2 优化版</title>
 <style>
   *{margin:0;padding:0}
-  body {
-    background:#060810;
-    display:flex;
-    justify-content:center;
-    align-items:center;
-    height:100vh;
-    overflow:hidden;
-    cursor:pointer;
-    font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif;
-    user-select: none; /* 防止用户双击选中文字影响体验 */
-    -webkit-user-select: none;
-  }
-  #hint {
-    position:fixed;
-    bottom: 50px;
-    left:50%;
-    transform:translateX(-50%);
-    color:rgba(255, 255, 255, 0.8);
-    font-size: 18px;
-    letter-spacing: 2px;
-    z-index:10;
-    pointer-events:none;
-    transition: opacity 1.5s ease-in-out, transform 1.5s ease-in-out;
-    text-shadow: 0 2px 8px rgba(0,0,0,0.8);
-    animation: pulse 2s infinite alternate;
-  }
-  
-  /* 给提示文字加一个微弱的呼吸动画，引导用户点击 */
-  @keyframes pulse {
-    0% { transform: translateX(-50%) scale(1); opacity: 0.7; }
-    100% { transform: translateX(-50%) scale(1.05); opacity: 1; }
-  }
-
-  /* p5.js canvas 容器样式优化 */
-  .p5Canvas {
-    border-radius: 12px !important;
-    box-shadow: 0 15px 80px rgba(0,0,0,0.8) !important;
-    transition: box-shadow 0.5s ease;
-  }
+  body{background:#060810;display:flex;justify-content:center;align-items:center;height:100vh;overflow:hidden;cursor:pointer;font-family:sans-serif;}
+  #hint{position:fixed;bottom:36px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.7);font-size:16px;z-index:10;pointer-events:none;transition:opacity 1.5s;text-shadow: 0 2px 4px rgba(0,0,0,0.5);}
 </style>
 </head>
 <body>
 <div id="hint">点击启动心跳</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
 <script>
-// 在文件顶部将 W 改为通过 width 获取，因为 canvas 尺寸是动态的了
-// 我们使用一个全局变量 W 代替，在 setup 和 resize 时更新它
-let W = 700;
+const W = 700;
 
 // ===== 音效 =====
 let audioCtx, started = false;
 let cycleFinished = false;
 
-function initAudio() {
+function initAudio() { 
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)(); 
   } else if (audioCtx.state === 'suspended') {
@@ -267,25 +226,13 @@ function growBranch(x, y, angle, len, thickness, depth) {
 
 // ===== p5 =====
 function setup() {
-  // 根据窗口高度动态计算尺寸，保证在各种屏幕下都能完整显示
-  // 在手机等竖屏设备上，为了让画布不要太小，我们稍微调整缩放逻辑
-  let isMobile = windowWidth < windowHeight;
-  W = min(windowWidth, windowHeight) * (isMobile ? 0.95 : 0.9);
-  if (W > 800) W = 800; // 设置一个最大值，防止在大屏显示器上过大
   let c = createCanvas(W, W);
+  c.style('border-radius', '8px');
+  c.style('box-shadow', '0 10px 60px rgba(0,0,0,0.6)');
   generateTree();
 }
 
-function windowResized() {
-  let isMobile = windowWidth < windowHeight;
-  W = min(windowWidth, windowHeight) * (isMobile ? 0.95 : 0.9);
-  if (W > 800) W = 800;
-  resizeCanvas(W, W);
-  generateTree(); // 窗口调整时重新生成，以适应新的尺寸
-}
-
-// 统一处理交互事件（支持鼠标点击和手机触摸）
-function handleInteract() {
+function mousePressed() {
   if (!started || cycleFinished) { 
     initAudio(); 
     if (cycleFinished) {
@@ -295,16 +242,6 @@ function handleInteract() {
     cycleFinished = false; // 确保解除完成状态
     document.getElementById('hint').style.opacity = '0'; 
   }
-}
-
-function mousePressed() {
-  handleInteract();
-}
-
-function touchStarted() {
-  handleInteract();
-  // 防止手机端双击放大的默认行为
-  return false; 
 }
 
 function draw() {
